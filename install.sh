@@ -40,11 +40,6 @@ need_cmd() {
   command -v "$1" >/dev/null 2>&1 || { echo -e "${RED}Missing required command: $1${NC}"; exit 1; }
 }
 
-pause() {
-  echo ""
-  read -rp "Press Enter to continue..."
-}
-
 ask_yes_no() {
   local prompt="$1"
   local default="${2:-y}"
@@ -68,18 +63,17 @@ ask_yes_no() {
 # ---------- preflight ----------
 need_cmd curl
 need_cmd systemctl
-need_cmd rpm-ostree || true   # optional but nice on Bazzite
 
 USER_HOME="$HOME"
 APPIMAGE_DIR="$USER_HOME/AppImages"
 OPENRGB_BIN="$APPIMAGE_DIR/openrgb"
 SERVICE_NAME="gamemodeleds.service"
 SERVICE_FILE="$USER_HOME/.config/systemd/user/$SERVICE_NAME"
-DEFAULT_PROFILE="gamemode"
 
 mkdir -p "$APPIMAGE_DIR"
 mkdir -p "$USER_HOME/.config/systemd/user"
 mkdir -p "$USER_HOME/.config/OpenRGB"
+mkdir -p "$USER_HOME/.local/bin"
 
 echo -e "${GREEN}✓${NC} Running as user: $(whoami)"
 echo ""
@@ -112,30 +106,29 @@ elif command -v openrgb >/dev/null 2>&1; then
   echo -e "${GREEN}✓${NC} Found system OpenRGB at $OPENRGB_BIN"
 else
   echo "Downloading latest OpenRGB AppImage (x86_64)..."
-  # Latest stable-ish RC from Codeberg
   APPIMAGE_URL="https://codeberg.org/OpenRGB/OpenRGB/releases/download/release_candidate_1.0rc3.1/OpenRGB_1.0rc3.1_x86_64_5e81e26.AppImage"
   TMP_APP="/tmp/OpenRGB-GameModeLEDs.AppImage"
-  curl -fL --progress-bar -o "$TMP_APP" "$APPIMAGE_URL" || {
-    echo -e "${RED}Download failed. Trying Bazzite ujust method...${NC}"
+  if curl -fL --progress-bar -o "$TMP_APP" "$APPIMAGE_URL"; then
+    mv "$TMP_APP" "$OPENRGB_BIN"
+    chmod +x "$OPENRGB_BIN"
+    echo -e "${GREEN}✓${NC} OpenRGB installed to $OPENRGB_BIN"
+  else
+    echo -e "${YELLOW}Download failed. Trying Bazzite ujust method...${NC}"
     if command -v ujust >/dev/null 2>&1; then
       ujust install-openrgb || true
-      # Try common locations after ujust
       if [[ -x "$HOME/AppImages/openrgb.appimage" ]]; then
         OPENRGB_BIN="$HOME/AppImages/openrgb.appimage"
       elif [[ -x "$HOME/Desktop/OpenRGB.AppImage" ]]; then
         OPENRGB_BIN="$HOME/Desktop/OpenRGB.AppImage"
+      elif [[ -x "$HOME/AppImages/OpenRGB.AppImage" ]]; then
+        OPENRGB_BIN="$HOME/AppImages/OpenRGB.AppImage"
       fi
     fi
-  }
-  if [[ -f "$TMP_APP" ]]; then
-    mv "$TMP_APP" "$OPENRGB_BIN"
-    chmod +x "$OPENRGB_BIN"
-    echo -e "${GREEN}✓${NC} OpenRGB installed to $OPENRGB_BIN"
   fi
 fi
 
 if [[ ! -x "$OPENRGB_BIN" ]]; then
-  echo -e "${RED}Could not find or install OpenRGB. Please install it manually and re-run.${NC}"
+  echo -e "${RED}Could not find or install OpenRGB. Please install it manually (ujust install-openrgb) and re-run.${NC}"
   exit 1
 fi
 
@@ -144,16 +137,12 @@ echo ""
 # ---------- udev rules + permissions ----------
 echo -e "${CYAN}${BOLD}[2/5] Hardware permissions (udev)${NC}"
 
-UDEV_RULE="/etc/udev/rules.d/60-openrgb.rules"
-if [[ -f "$UDEV_RULE" ]] || [[ -f /usr/lib/udev/rules.d/60-openrgb.rules ]]; then
+if [[ -f /etc/udev/rules.d/60-openrgb.rules ]] || [[ -f /usr/lib/udev/rules.d/60-openrgb.rules ]]; then
   echo -e "${GREEN}✓${NC} OpenRGB udev rules already present"
 else
   echo "Installing OpenRGB udev rules (needs sudo)..."
   TMP_RULES="/tmp/60-openrgb.rules"
-  curl -fsSL -o "$TMP_RULES" "https://codeberg.org/OpenRGB/OpenRGB/releases/download/release_candidate_1.0rc3.1/60-openrgb.rules" || \
-    curl -fsSL -o "$TMP_RULES" "https://openrgb.org/releases/release_candidate_1.0rc3.1/60-openrgb.rules" || true
-
-  if [[ -f "$TMP_RULES" ]]; then
+  if curl -fsSL -o "$TMP_RULES" "https://codeberg.org/OpenRGB/OpenRGB/releases/download/release_candidate_1.0rc3.1/60-openrgb.rules"; then
     sudo cp "$TMP_RULES" /etc/udev/rules.d/60-openrgb.rules
     sudo udevadm control --reload-rules
     sudo udevadm trigger
@@ -187,9 +176,7 @@ echo ""
 # ---------- systemd user service ----------
 echo -e "${CYAN}${BOLD}[4/5] Game Mode auto-start service${NC}"
 
-# Create a small wrapper that works both in desktop and Gamescope
 WRAPPER="$USER_HOME/.local/bin/gamemodeleds-start.sh"
-mkdir -p "$USER_HOME/.local/bin"
 
 cat > "$WRAPPER" << EOF
 #!/usr/bin/env bash
@@ -197,10 +184,9 @@ cat > "$WRAPPER" << EOF
 sleep 12   # let USB / I2C settle after Gamescope starts
 
 export DISPLAY=":0"
-# Gamescope usually uses wayland-1; desktop uses wayland-0. Try both safely.
-export WAYLAND_DISPLAY="">${WAYLAND_DISPLAY:-wayland-1}"
+# Gamescope usually uses wayland-1; desktop uses wayland-0
+export WAYLAND_DISPLAY="\${WAYLAND_DISPLAY:-wayland-1}"
 
-# Prefer the AppImage we installed
 OPENRGB="$OPENRGB_BIN"
 
 if [[ ! -x "\$OPENRGB" ]]; then
@@ -246,7 +232,6 @@ echo ""
 echo -e "${CYAN}${BOLD}[5/5] Decky plugin${NC}"
 
 if [[ "$INSTALL_DECKY_PLUGIN" == true ]]; then
-  # Ensure Decky is present
   if [[ ! -d "$HOME/homebrew" ]] && [[ ! -d "$HOME/.local/share/SteamDeckHomebrew" ]]; then
     echo "Decky Loader not detected."
     if ask_yes_no "Install Decky Loader now? (recommended)" "y"; then
@@ -258,9 +243,8 @@ if [[ "$INSTALL_DECKY_PLUGIN" == true ]]; then
   fi
 
   PLUGIN_DIR="$HOME/homebrew/plugins/GameModeLEDs"
-  mkdir -p "$PLUGIN_DIR"
+  mkdir -p "$PLUGIN_DIR/dist"
 
-  # Minimal but functional Decky plugin (Python backend + simple frontend)
   cat > "$PLUGIN_DIR/plugin.json" << 'PLUGINJSON'
 {
   "name": "GameModeLEDs",
@@ -278,7 +262,6 @@ PLUGINJSON
   cat > "$PLUGIN_DIR/main.py" << 'MAINPY'
 import decky
 import asyncio
-import subprocess
 import os
 from pathlib import Path
 
@@ -290,7 +273,6 @@ class Plugin:
         decky.logger.info("GameModeLEDs backend unloaded")
 
     async def list_profiles(self):
-        """Return list of .orp profile names"""
         profiles = []
         conf = Path.home() / ".config" / "OpenRGB"
         if conf.exists():
@@ -299,12 +281,10 @@ class Plugin:
         return sorted(profiles)
 
     async def load_profile(self, name: str):
-        """Tell the running OpenRGB server to load a profile via CLI"""
         openrgb = os.path.expanduser("~/AppImages/openrgb")
         if not os.path.isfile(openrgb):
             openrgb = "openrgb"
         try:
-            # CLI can talk to the already-running server
             proc = await asyncio.create_subprocess_exec(
                 openrgb, "--profile", name,
                 stdout=asyncio.subprocess.PIPE,
@@ -316,7 +296,6 @@ class Plugin:
             return {"ok": False, "error": str(e)}
 
     async def set_color(self, r: int, g: int, b: int):
-        """Set all devices to a solid color"""
         openrgb = os.path.expanduser("~/AppImages/openrgb")
         if not os.path.isfile(openrgb):
             openrgb = "openrgb"
@@ -336,14 +315,8 @@ class Plugin:
         return await self.set_color(0, 0, 0)
 MAINPY
 
-  # Very simple frontend (no build step required for basic functionality)
-  mkdir -p "$PLUGIN_DIR/dist"
   cat > "$PLUGIN_DIR/dist/index.js" << 'INDEXJS'
-// Minimal GameModeLEDs frontend – works without a full React build
-(function() {
-  // Decky will load this. We keep it extremely simple.
-  console.log("GameModeLEDs frontend loaded");
-})();
+console.log("GameModeLEDs frontend loaded");
 INDEXJS
 
   cat > "$PLUGIN_DIR/package.json" << 'PKG'
@@ -357,7 +330,7 @@ PKG
 
   echo -e "${GREEN}✓${NC} Decky plugin installed to $PLUGIN_DIR"
   echo "   Restart Decky Loader or reboot, then look for GameModeLEDs in the plugin list."
-  echo "   (If the UI is minimal, the Python backend still works – full polished UI can be improved later.)"
+  echo "   (The Python backend is ready; a fuller React UI can be added later.)"
 else
   echo "Skipped Decky plugin."
 fi
