@@ -50,7 +50,9 @@ ask_yes_no() {
     prompt+=" [y/N] "
   fi
   while true; do
-    read -rp "$prompt" reply
+    # Print prompt on its own line for clarity on small terminals
+    echo -en "${prompt}"
+    read -r reply
     reply=${reply:-$default}
     case "${reply,,}" in
       y|yes) return 0 ;;
@@ -75,7 +77,7 @@ mkdir -p "$USER_HOME/.config/systemd/user"
 mkdir -p "$USER_HOME/.config/OpenRGB"
 mkdir -p "$USER_HOME/.local/bin"
 
-echo -e "${GREEN}✓${NC} Running as user: $(whoami)"
+echo -e "${GREEN}✓${NC} Running as user: $(whoami)  (HOME=$USER_HOME)"
 echo ""
 
 # ---------- Decky prompt (up front) ----------
@@ -89,10 +91,14 @@ fi
 echo ""
 
 # ---------- Profile name ----------
-read -rp "What should the default lighting profile be called? (just press Enter for 'gamemode'): " PROFILE_NAME
+echo -n "What should the default lighting profile be called? (just press Enter for 'gamemode'): "
+read -r PROFILE_NAME
 PROFILE_NAME=${PROFILE_NAME:-gamemode}
-# sanitize
+# sanitize: only keep safe characters
 PROFILE_NAME=$(echo "$PROFILE_NAME" | tr -cd '[:alnum:]_-')
+if [[ -z "$PROFILE_NAME" ]]; then
+  PROFILE_NAME="gamemode"
+fi
 echo -e "${GREEN}→${NC} Default profile will be: ${BOLD}$PROFILE_NAME${NC}"
 echo ""
 
@@ -116,12 +122,12 @@ else
     echo -e "${YELLOW}Download failed. Trying Bazzite ujust method...${NC}"
     if command -v ujust >/dev/null 2>&1; then
       ujust install-openrgb || true
-      if [[ -x "$HOME/AppImages/openrgb.appimage" ]]; then
-        OPENRGB_BIN="$HOME/AppImages/openrgb.appimage"
-      elif [[ -x "$HOME/Desktop/OpenRGB.AppImage" ]]; then
-        OPENRGB_BIN="$HOME/Desktop/OpenRGB.AppImage"
-      elif [[ -x "$HOME/AppImages/OpenRGB.AppImage" ]]; then
-        OPENRGB_BIN="$HOME/AppImages/OpenRGB.AppImage"
+      if [[ -x "$USER_HOME/AppImages/openrgb.appimage" ]]; then
+        OPENRGB_BIN="$USER_HOME/AppImages/openrgb.appimage"
+      elif [[ -x "$USER_HOME/Desktop/OpenRGB.AppImage" ]]; then
+        OPENRGB_BIN="$USER_HOME/Desktop/OpenRGB.AppImage"
+      elif [[ -x "$USER_HOME/AppImages/OpenRGB.AppImage" ]]; then
+        OPENRGB_BIN="$USER_HOME/AppImages/OpenRGB.AppImage"
       fi
     fi
   fi
@@ -156,7 +162,11 @@ echo ""
 
 # ---------- Optional kernel arg for RAM / SMBus ----------
 echo -e "${CYAN}${BOLD}[3/5] Addressable RAM / motherboard SMBus support${NC}"
-if ask_yes_no "Add kernel argument 'acpi_enforce_resources=lax' so OpenRGB can see RGB RAM sticks and some motherboard LEDs? (recommended)" "y"; then
+echo "This adds the kernel argument 'acpi_enforce_resources=lax' so OpenRGB can"
+echo "detect RGB RAM sticks and certain motherboard LEDs. A reboot is required"
+echo "after this step for the change to take effect."
+echo ""
+if ask_yes_no "Add the kernel argument now? (recommended)" "y"; then
   if command -v rpm-ostree >/dev/null 2>&1; then
     if rpm-ostree kargs | grep -q 'acpi_enforce_resources=lax'; then
       echo -e "${GREEN}✓${NC} Kernel argument already present"
@@ -225,14 +235,14 @@ systemctl --user daemon-reload
 systemctl --user enable --now "$SERVICE_NAME" || true
 
 echo -e "${GREEN}✓${NC} Service installed and enabled: $SERVICE_NAME"
-echo "   It will start OpenRGB + profile '$PROFILE_NAME' on every login / Game Mode boot."
+echo "   It will start OpenRGB + profile '${PROFILE_NAME}' on every login / Game Mode boot."
 echo ""
 
 # ---------- Decky plugin (optional) ----------
 echo -e "${CYAN}${BOLD}[5/5] Decky plugin${NC}"
 
 if [[ "$INSTALL_DECKY_PLUGIN" == true ]]; then
-  if [[ ! -d "$HOME/homebrew" ]] && [[ ! -d "$HOME/.local/share/SteamDeckHomebrew" ]]; then
+  if [[ ! -d "$USER_HOME/homebrew" ]] && [[ ! -d "$USER_HOME/.local/share/SteamDeckHomebrew" ]]; then
     echo "Decky Loader not detected."
     if ask_yes_no "Install Decky Loader now? (recommended)" "y"; then
       echo "Installing Decky Loader..."
@@ -242,8 +252,32 @@ if [[ "$INSTALL_DECKY_PLUGIN" == true ]]; then
     fi
   fi
 
-  PLUGIN_DIR="$HOME/homebrew/plugins/GameModeLEDs"
-  mkdir -p "$PLUGIN_DIR/dist"
+  PLUGIN_DIR="$USER_HOME/homebrew/plugins/GameModeLEDs"
+
+  # --- Robust directory creation (fixes the common "Permission denied" on Bazzite) ---
+  if [[ -d "$USER_HOME/homebrew" ]] && [[ ! -w "$USER_HOME/homebrew" ]]; then
+    echo -e "${YELLOW}!${NC} ~/homebrew exists but is not writable (often left owned by root)."
+    echo "   Fixing ownership (needs sudo)..."
+    if sudo chown -R "$USER:$USER" "$USER_HOME/homebrew"; then
+      echo -e "${GREEN}✓${NC} Ownership fixed"
+    else
+      echo -e "${RED}Failed to fix permissions on ~/homebrew.${NC}"
+      echo "Please run this command yourself, then re-run the installer:"
+      echo "  sudo chown -R \$USER:\$USER ~/homebrew"
+      exit 1
+    fi
+  fi
+
+  if ! mkdir -p "$PLUGIN_DIR/dist" 2>/dev/null; then
+    echo -e "${YELLOW}!${NC} Could not create plugin directory as user. Trying with sudo + chown..."
+    sudo mkdir -p "$PLUGIN_DIR/dist"
+    sudo chown -R "$USER:$USER" "$USER_HOME/homebrew"
+    if [[ ! -w "$PLUGIN_DIR" ]]; then
+      echo -e "${RED}Still cannot write to $PLUGIN_DIR${NC}"
+      echo "Please run:  sudo chown -R \$USER:\$USER ~/homebrew"
+      exit 1
+    fi
+  fi
 
   cat > "$PLUGIN_DIR/plugin.json" << 'PLUGINJSON'
 {
@@ -272,6 +306,20 @@ class Plugin:
     async def _unload(self):
         decky.logger.info("GameModeLEDs backend unloaded")
 
+    def _find_openrgb(self):
+        candidates = [
+            os.path.expanduser("~/AppImages/openrgb"),
+            os.path.expanduser("~/AppImages/openrgb.appimage"),
+            "openrgb",
+        ]
+        for c in candidates:
+            if os.path.isfile(c) and os.access(c, os.X_OK):
+                return c
+            # also accept plain name if on PATH
+            if c == "openrgb":
+                return c
+        return "openrgb"
+
     async def list_profiles(self):
         profiles = []
         conf = Path.home() / ".config" / "OpenRGB"
@@ -281,9 +329,7 @@ class Plugin:
         return sorted(profiles)
 
     async def load_profile(self, name: str):
-        openrgb = os.path.expanduser("~/AppImages/openrgb")
-        if not os.path.isfile(openrgb):
-            openrgb = "openrgb"
+        openrgb = self._find_openrgb()
         try:
             proc = await asyncio.create_subprocess_exec(
                 openrgb, "--profile", name,
@@ -296,9 +342,7 @@ class Plugin:
             return {"ok": False, "error": str(e)}
 
     async def set_color(self, r: int, g: int, b: int):
-        openrgb = os.path.expanduser("~/AppImages/openrgb")
-        if not os.path.isfile(openrgb):
-            openrgb = "openrgb"
+        openrgb = self._find_openrgb()
         color = f"{r:02x}{g:02x}{b:02x}"
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -327,6 +371,9 @@ INDEXJS
   "type": "module"
 }
 PKG
+
+  # Ensure the user owns everything we just wrote
+  chown -R "$USER:$USER" "$PLUGIN_DIR" 2>/dev/null || true
 
   echo -e "${GREEN}✓${NC} Decky plugin installed to $PLUGIN_DIR"
   echo "   Restart Decky Loader or reboot, then look for GameModeLEDs in the plugin list."
