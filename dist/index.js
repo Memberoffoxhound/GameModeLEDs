@@ -107,17 +107,34 @@ const COLORS = [
     { label: "Purple", r: 160, g: 0, b: 255 },
     { label: "Pink", r: 255, g: 40, b: 160 },
 ];
+const readRunningGame = () => {
+    try {
+        const app = DFL.Router.MainRunningApp;
+        if (!app)
+            return null;
+        return { name: app.display_name || "Game", appid: app.appid ?? null };
+    }
+    catch {
+        return null;
+    }
+};
+const gameKey = (g) => g ? String(g.appid ?? "") + "|" + (g.name || "") : "";
 function Content() {
     const [status, setStatus] = SP_REACT.useState(null);
     const [msg, setMsg] = SP_REACT.useState("");
     const [busy, setBusy] = SP_REACT.useState(false);
     const [profile, setProfile] = SP_REACT.useState("");
+    const [game, setGame] = SP_REACT.useState(readRunningGame());
+    const [swatch, setSwatch] = SP_REACT.useState("");
     const refresh = async () => {
         try {
             const s = await call("status");
             setStatus(s);
             if (s.profiles && s.profiles.length && !profile) {
-                setProfile(s.profiles[0]);
+                const idle = s.idle_profile && s.profiles.indexOf(s.idle_profile) >= 0
+                    ? s.idle_profile
+                    : s.profiles[0];
+                setProfile(idle);
             }
         }
         catch (e) {
@@ -127,6 +144,8 @@ function Content() {
     SP_REACT.useEffect(() => {
         call("ensure_server").catch(() => { });
         refresh();
+        const id = window.setInterval(() => setGame(readRunningGame()), 2000);
+        return () => window.clearInterval(id);
     }, []);
     const run = async (label, fn) => {
         if (busy)
@@ -137,8 +156,12 @@ function Content() {
             const r = await fn();
             if (r && r.ok === false)
                 setMsg(r.error || "failed");
-            else
+            else {
                 setMsg(label + " ✓");
+                if (r && typeof r.r === "number") {
+                    setSwatch(`rgb(${r.r},${r.g},${r.b})`);
+                }
+            }
             await refresh();
         }
         catch (e) {
@@ -150,7 +173,20 @@ function Content() {
     };
     const profiles = status?.profiles || [];
     const profileOpts = profiles.map((p) => ({ label: p, data: p }));
+    const autoOn = status?.auto !== false;
     return (window.SP_REACT.createElement(window.SP_REACT.Fragment, null,
+        window.SP_REACT.createElement(DFL.PanelSection, { title: "Follow game" },
+            window.SP_REACT.createElement(DFL.PanelSectionRow, null,
+                window.SP_REACT.createElement(DFL.ToggleField, { label: "Auto color from game art", description: "When you launch a game, lights match its artwork. A profile is created if you don't already have one.", checked: autoOn, onChange: (v) => {
+                        call("set_auto", v).then(() => refresh()).catch((e) => setMsg(String(e)));
+                    } })),
+            window.SP_REACT.createElement(DFL.PanelSectionRow, null,
+                window.SP_REACT.createElement("div", { style: { fontSize: 12, lineHeight: 1.4, display: "flex", alignItems: "center", gap: 8 } },
+                    swatch ? (window.SP_REACT.createElement("span", { style: {
+                            width: 16, height: 16, borderRadius: 4, background: swatch,
+                            display: "inline-block", border: "1px solid rgba(255,255,255,0.35)", flexShrink: 0,
+                        } })) : null,
+                    window.SP_REACT.createElement("span", { style: { opacity: 0.9 } }, game ? (game.name + (game.appid ? ` (${game.appid})` : "")) : "No game running — idle profile")))),
         window.SP_REACT.createElement(DFL.PanelSection, { title: "OpenRGB" },
             window.SP_REACT.createElement(DFL.PanelSectionRow, null,
                 window.SP_REACT.createElement("div", { style: { fontSize: 12, opacity: 0.85, lineHeight: 1.4 } },
@@ -161,11 +197,13 @@ function Content() {
             msg ? (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
                 window.SP_REACT.createElement("div", { style: { fontSize: 12, color: msg.indexOf("✓") >= 0 ? "#8f8" : "#fc6" } }, msg))) : null),
         window.SP_REACT.createElement(DFL.PanelSection, { title: "Profiles" }, profiles.length === 0 ? (window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-            window.SP_REACT.createElement("div", { style: { fontSize: 12, opacity: 0.8 } }, "No saved profiles. In Desktop Mode open OpenRGB, set your lights, Save Profile, then come back here."))) : (window.SP_REACT.createElement(window.SP_REACT.Fragment, null,
+            window.SP_REACT.createElement("div", { style: { fontSize: 12, opacity: 0.8 } }, "No saved profiles yet. Launch a game with auto color on, or save one in OpenRGB on the desktop."))) : (window.SP_REACT.createElement(window.SP_REACT.Fragment, null,
             window.SP_REACT.createElement(DFL.PanelSectionRow, null,
                 window.SP_REACT.createElement(DFL.DropdownItem, { label: "Profile", rgOptions: profileOpts, selectedOption: profile || profiles[0], onChange: (v) => setProfile(v.data) })),
             window.SP_REACT.createElement(DFL.PanelSectionRow, null,
-                window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", disabled: busy, onClick: () => run("Load " + (profile || profiles[0]), () => call("load_profile", profile || profiles[0])) }, "Load profile"))))),
+                window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", disabled: busy, onClick: () => run("Load " + (profile || profiles[0]), () => call("load_profile", profile || profiles[0])) }, "Load profile")),
+            window.SP_REACT.createElement(DFL.PanelSectionRow, null,
+                window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", disabled: busy, onClick: () => run("Idle = " + (profile || profiles[0]), () => call("set_idle_profile", profile || profiles[0])) }, "Use as idle profile"))))),
         window.SP_REACT.createElement(DFL.PanelSection, { title: "Quick colors" },
             COLORS.map((c) => (window.SP_REACT.createElement(DFL.PanelSectionRow, { key: c.label },
                 window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", disabled: busy, onClick: () => run(c.label, () => call("set_color", c.r, c.g, c.b)) }, c.label)))),
@@ -173,10 +211,38 @@ function Content() {
                 window.SP_REACT.createElement(DFL.ButtonItem, { layout: "below", disabled: busy, onClick: () => run("Lights off", () => call("turn_off")) }, "Lights off")))));
 }
 var index = DFL.definePlugin(() => {
+    let last = "";
+    let unreg;
+    const pushGame = () => {
+        const g = readRunningGame();
+        const k = gameKey(g);
+        if (k === last)
+            return;
+        last = k;
+        call("sync_game", g ? g.appid : null, g ? g.name : "")
+            .catch((e) => console.error("[GameModeLEDs] sync_game", e));
+    };
+    try {
+        const sc = window.SteamClient;
+        unreg = sc?.GameSessions?.RegisterForAppLifetimeNotifications?.(() => {
+            setTimeout(pushGame, 600);
+        })?.unregister;
+    }
+    catch { }
+    const iv = window.setInterval(pushGame, 4000);
+    setTimeout(pushGame, 800);
     return {
         title: window.SP_REACT.createElement("div", { className: DFL.staticClasses.Title }, "GameModeLEDs"),
         content: window.SP_REACT.createElement(Content, null),
         icon: window.SP_REACT.createElement(FaLightbulb, null),
+        alwaysRender: true,
+        onDismount() {
+            window.clearInterval(iv);
+            try {
+                unreg?.();
+            }
+            catch { }
+        },
     };
 });
 
