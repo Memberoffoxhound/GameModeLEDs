@@ -58,10 +58,10 @@ You can create as many profiles as you want later and switch them from the Decky
 
 If you said yes during install, a plugin called **GameModeLEDs** appears in Decky Loader.
 
-It lets you:
-- See connected devices
+From the Quick Access Menu it lets you:
 - Load any saved OpenRGB profile
-- Quickly set common colors / turn lights off
+- Set common colors
+- Turn lights off
 
 (Decky must already be installed or the installer will offer to set it up.)
 

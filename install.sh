@@ -279,105 +279,26 @@ if [[ "$INSTALL_DECKY_PLUGIN" == true ]]; then
     fi
   fi
 
-  cat > "$PLUGIN_DIR/plugin.json" << 'PLUGINJSON'
-{
-  "name": "GameModeLEDs",
-  "author": "Memberoffoxhound",
-  "flags": ["root"],
-  "api_version": 1,
-  "publish": {
-    "tags": ["rgb", "openrgb", "lighting", "utility"],
-    "description": "Control OpenRGB profiles and lights from Game Mode",
-    "image": ""
+  BASE_URL="https://raw.githubusercontent.com/Memberoffoxhound/GameModeLEDs/main"
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-}")" 2>/dev/null && pwd || true)"
+  copy_plugin_file() {
+    local rel="$1" dest="$2"
+    if [[ -n "${SCRIPT_DIR:-}" && -f "$SCRIPT_DIR/$rel" ]]; then
+      cp -a "$SCRIPT_DIR/$rel" "$dest"
+    else
+      curl -fsSL "$BASE_URL/$rel" -o "$dest"
+    fi
   }
-}
-PLUGINJSON
-
-  cat > "$PLUGIN_DIR/main.py" << 'MAINPY'
-import decky
-import asyncio
-import os
-from pathlib import Path
-
-class Plugin:
-    async def _main(self):
-        decky.logger.info("GameModeLEDs backend started")
-
-    async def _unload(self):
-        decky.logger.info("GameModeLEDs backend unloaded")
-
-    def _find_openrgb(self):
-        candidates = [
-            os.path.expanduser("~/AppImages/openrgb"),
-            os.path.expanduser("~/AppImages/openrgb.appimage"),
-            "openrgb",
-        ]
-        for c in candidates:
-            if os.path.isfile(c) and os.access(c, os.X_OK):
-                return c
-            # also accept plain name if on PATH
-            if c == "openrgb":
-                return c
-        return "openrgb"
-
-    async def list_profiles(self):
-        profiles = []
-        conf = Path.home() / ".config" / "OpenRGB"
-        if conf.exists():
-            for p in conf.glob("*.orp"):
-                profiles.append(p.stem)
-        return sorted(profiles)
-
-    async def load_profile(self, name: str):
-        openrgb = self._find_openrgb()
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                openrgb, "--profile", name,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
-            await proc.wait()
-            return {"ok": True, "profile": name}
-        except Exception as e:
-            return {"ok": False, "error": str(e)}
-
-    async def set_color(self, r: int, g: int, b: int):
-        openrgb = self._find_openrgb()
-        color = f"{r:02x}{g:02x}{b:02x}"
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                openrgb, "-c", color,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
-            await proc.wait()
-            return {"ok": True}
-        except Exception as e:
-            return {"ok": False, "error": str(e)}
-
-    async def turn_off(self):
-        return await self.set_color(0, 0, 0)
-MAINPY
-
-  cat > "$PLUGIN_DIR/dist/index.js" << 'INDEXJS'
-console.log("GameModeLEDs frontend loaded");
-INDEXJS
-
-  cat > "$PLUGIN_DIR/package.json" << 'PKG'
-{
-  "name": "gamemodeleds",
-  "version": "1.0.0",
-  "description": "OpenRGB control in Game Mode",
-  "type": "module"
-}
-PKG
-
-  # Ensure the user owns everything we just wrote
-  chown -R "$USER:$USER" "$PLUGIN_DIR" 2>/dev/null || true
+  mkdir -p "$PLUGIN_DIR/dist"
+  copy_plugin_file plugin.json "$PLUGIN_DIR/plugin.json"
+  copy_plugin_file main.py "$PLUGIN_DIR/main.py"
+  copy_plugin_file package.json "$PLUGIN_DIR/package.json"
+  copy_plugin_file dist/index.js "$PLUGIN_DIR/dist/index.js"
+  [[ -s "$PLUGIN_DIR/dist/index.js" ]] || { echo -e "${RED}Failed to install QAM frontend (dist/index.js)${NC}"; exit 1; }
+  [[ -s "$PLUGIN_DIR/main.py" ]] || { echo -e "${RED}Failed to install plugin backend (main.py)${NC}"; exit 1; }
 
   echo -e "${GREEN}✓${NC} Decky plugin installed to $PLUGIN_DIR"
-  echo "   Restart Decky Loader or reboot, then look for GameModeLEDs in the plugin list."
-  echo "   (The Python backend is ready; a fuller React UI can be added later.)"
+  echo "   Restart Decky Loader or reopen the QAM, then open GameModeLEDs to change colors and profiles."
 else
   echo "Skipped Decky plugin."
 fi

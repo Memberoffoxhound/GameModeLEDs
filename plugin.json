@@ -1,0 +1,11 @@
+{
+  "name": "GameModeLEDs",
+  "author": "Memberoffoxhound",
+  "flags": [],
+  "api_version": 1,
+  "publish": {
+    "tags": ["rgb", "openrgb", "lighting", "utility"],
+    "description": "Control OpenRGB profiles and lights from Game Mode",
+    "image": ""
+  }
+}

@@ -1,0 +1,9 @@
+node_modules
+dist/*.map
+.pnpm-store
+__pycache__/
+*.pyc
+.DS_Store
+.vscode
+out/
+cli/
